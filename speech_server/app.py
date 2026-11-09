@@ -124,7 +124,12 @@ async def tts(body: Speech):
 def transcribe(pcm):
     import numpy as np
     samples = np.frombuffer(pcm, dtype='<i2').astype(np.float32)/32768
-    segments, _ = runtime['stt'].transcribe(samples, language='ru', beam_size=1, condition_on_previous_text=False, vad_filter=False)
+    segments, _ = runtime['stt'].transcribe(
+        samples, language='ru', beam_size=1, condition_on_previous_text=False,
+        vad_filter=True, vad_parameters={'min_silence_duration_ms': 450},
+        no_speech_threshold=0.6, log_prob_threshold=-0.8,
+        compression_ratio_threshold=2.4,
+    )
     return ' '.join(s.text.strip() for s in segments).strip()
 
 
@@ -146,6 +151,10 @@ async def stt(ws: WebSocket):
             final, pcm, identity = await queue.get()
             started = time.monotonic()
             text = await asyncio.get_running_loop().run_in_executor(runtime['executor'],transcribe,pcm)
+            # Whisper can return an empty segment for silence/noise. Do not leak
+            # those as chat events; they otherwise look like endless empty turns.
+            if not text:
+                continue
             await ws.send_json({'type':'transcript','text':text,'final':final,'utterance':identity,'latency_ms':round((time.monotonic()-started)*1000)})
     task = asyncio.create_task(infer())
     window, count = time.monotonic(), 0
